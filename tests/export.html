@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ca">
+<head><meta charset="utf-8"><title>Prova d'exportació</title></head>
+<body>
+<pre id="out">running</pre>
+<pre id="xlsx"></pre>
+<pre id="pdf"></pre>
+<script type="module">
+// Genera horaris individuals en PDF i Excel a partir del centre d'exemple.
+// tests/run.py en valida l'estructura amb Python (zip, XML, taula xref del PDF).
+import { sampleSchool, buildIndex } from '../js/model.js';
+import { greedyFill } from '../js/solver/greedy.js';
+import { KINDS, timetableOf, timetablesPdf, timetablesXlsx } from '../js/export/timetable.js';
+import { textWidth, fit } from '../js/export/pdf.js';
+import { colName } from '../js/export/xlsx.js';
+
+const out = document.getElementById('out');
+const log = [];
+const check = (name, cond) => log.push(`${cond ? 'OK  ' : 'FAIL'} ${name}`);
+const b64 = (bytes) => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s); };
+
+try {
+  const s = sampleSchool();
+  greedyFill(s);
+  s.meta.name = 'Institut d’Osona · l·l àèéíòóúç';
+  s.rules = [{ id: 'n1', type: 'teacherBlock', on: true, hard: true, label: 'Reunió de cicle', teacherIds: [s.teachers[0].id], slots: ['d2|p6'], subjectIds: [], classIds: [] }];
+  const ix = buildIndex(s);
+
+  const cls = timetableOf(s, 'class', s.classes[0].id, ix);
+  check(`grup: ${cls.hours} hores (el desdoblament compta un cop)`, cls.hours === 30);
+  const fr = cls.cells.flat().find((c) => c.length === 2);
+  check('desdoblament: dues sessions a la mateixa franja', !!fr);
+  const t0 = timetableOf(s, 'teacher', s.teachers[0].id, ix);
+  check('docent: la reunió surt a l’horari', t0.cells[s.periods.findIndex((p) => p.id === 'p6')][1].some((i) => i.title === 'Reunió de cicle'));
+  const subj = timetableOf(s, 'subject', s.subjects.find((x) => x.short === 'Mat').id, ix);
+  check(`matèria: ${subj.hours} hores de Mat`, subj.hours === 28);
+  const room = timetableOf(s, 'room', s.rooms[0].id, ix);
+  check(`aula: ${room.hours} hores al gimnàs`, room.hours === 14);
+
+  check('amplada de text', Math.abs(textWidth('Hola', 10) - 20.56) < 0.01);
+  check('retalla amb punts suspensius', fit('Educació visual i plàstica', 60, 10).endsWith('…') && textWidth(fit('Educació visual i plàstica', 60, 10), 10) <= 60);
+  check('noms de columna', colName(0) === 'A' && colName(25) === 'Z' && colName(26) === 'AA');
+
+  const all = Object.keys(KINDS).flatMap((k) => KINDS[k].list(s).map((x) => timetableOf(s, k, x.id, ix)));
+  const pdf = timetablesPdf(all);
+  const txt = new TextDecoder('latin1').decode(pdf);
+  check(`PDF: ${all.length} pàgines`, (txt.match(/\/Type \/Page /g) || []).length === all.length);
+  const xl = timetablesXlsx(all);
+  check('Excel generat', xl.length > 10000 && xl[0] === 0x50 && xl[1] === 0x4b);
+  document.getElementById('xlsx').textContent = b64(xl);
+  document.getElementById('pdf').textContent = b64(timetablesPdf([cls, t0]));
+} catch (err) {
+  log.push(`FAIL excepció: ${err.message}\n${err.stack}`);
+}
+out.textContent = log.join('\n');
+out.id = 'done';
+</script>
+</body>
+</html>

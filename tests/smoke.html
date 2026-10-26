@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="ca">
+<head><meta charset="utf-8"><title>Prova de fum</title></head>
+<body>
+<pre id="out">running</pre>
+<iframe id="f" src="../index.html" style="width:1400px;height:850px"></iframe>
+<script>
+// Prova de fum: obre l'aplicació en un iframe i simula interaccions bàsiques.
+// Cal el servidor amb una base de dades de prova i un administrador; ho prepara tests/run.py.
+// Credencials: ?email=…&pw=… a l'adreça d'aquesta pàgina.
+const params = new URLSearchParams(location.search);
+const EMAIL = params.get('email'), PW = params.get('pw');
+const out = document.getElementById('out');
+const log = [];
+const check = (name, cond) => { log.push(`${cond ? 'OK  ' : 'FAIL'} ${name}`); out.textContent = log.join('\n'); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function until(cond, ms = 15000) {
+  for (let t = 0; t < ms; t += 50) { if (cond()) return true; await wait(50); }
+  return false;
+}
+
+document.getElementById('f').addEventListener('load', async () => {
+  const w = document.getElementById('f').contentWindow;
+  const d = w.document;
+  const placed = () => parseInt(d.querySelector('.status b').textContent, 10);
+  try {
+    const errs = [];
+    w.addEventListener('error', (e) => errs.push(e.message));
+    const m = d.getElementById('modal');
+    const downloads = [];
+    w.URL.createObjectURL = (blob) => { downloads.push(blob); return 'blob:prova'; };
+    w.HTMLAnchorElement.prototype.click = function () { downloads.at(-1).fileName = this.download; };
+    const login = async (email, pw) => {
+      await until(() => d.getElementById('login-form'));
+      const f = d.getElementById('login-form');
+      f.email.value = email;
+      f.password.value = pw;
+      f.requestSubmit();
+    };
+
+    // Inici de sessió
+    check('pantalla de login', await until(() => d.getElementById('login-form')));
+    await login(EMAIL, 'dolenta-1');
+    check('contrasenya incorrecta', await until(() => d.querySelector('.login .err')));
+    await login(EMAIL, PW);
+    check('entra com a administrador', await until(() => d.querySelector('[data-act="admin"]')));
+
+    // Primer centre (servidor buit)
+    d.querySelector('.empty [data-act="new-centre"]').click();
+    m.querySelector('input[name=name]').value = "Institut d'exemple";
+    m.querySelector('select[name=tpl]').value = 'exemple';
+    m.querySelector('#new-centre').requestSubmit();
+    check('crea el centre d\'exemple', await until(() => d.querySelectorAll('.grid tbody tr').length === 7));
+    check('desat al servidor', await until(() => d.querySelector('.save.ok')));
+    const centreId = () => d.querySelector('#centre-sel').value;
+    const serverData = async () => (await (await w.fetch(`/api/centres/${centreId()}`)).json()).data;
+
+    check('graella amb files', d.querySelectorAll('.grid tbody tr').length === 7);
+    const p0 = placed();
+    check('centre d\'exemple té sessions col·locades', p0 > 150);
+
+    // Treure una sessió amb Supr
+    d.querySelector('.card').click();
+    check('panell mostra la sessió', !!d.querySelector('.detail dl'));
+    check('cel·les ressaltades', d.querySelectorAll('td.cell.ok, td.cell.no').length > 0);
+    d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+    check('Supr treu la sessió', placed() === p0 - 1);
+
+    // Col·locar-la de nou clicant
+    const tc = d.querySelector('.tcard');
+    tc.click();
+    const ok = d.querySelector('td.cell.ok');
+    check('hi ha alguna cel·la vàlida', !!ok);
+    if (ok) { ok.click(); check('clic a cel·la verda col·loca', placed() === p0); }
+
+    // Desfer / refer
+    d.querySelector('[data-act="undo"]').click();
+    check('desfer', placed() === p0 - 1);
+    d.querySelector('[data-act="redo"]').click();
+    check('refer', placed() === p0);
+
+    // Cel·la invàlida no col·loca (treu-ne una primer si la safata és buida)
+    if (!d.querySelector('.tcard')) {
+      d.querySelector('.card').click();
+      d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+    }
+    const p1 = placed();
+    d.querySelector('.tcard').click();
+    const no = d.querySelector('td.cell.no');
+    if (no) { const n = placed(); no.click(); check('cel·la vermella no col·loca', placed() === n && d.getElementById('msg').textContent.length > 0); }
+    d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    // Vistes
+    d.querySelector('[data-view="teacher"]').click();
+    check('vista professorat', d.querySelectorAll('.grid tbody tr').length === 16);
+    d.querySelector('[data-view="room"]').click();
+    check('vista aules', d.querySelectorAll('.grid tbody tr').length === 14);
+    d.querySelector('[data-view="class"]').click();
+
+    // Filtre de fila
+    d.querySelector('[data-rowsel]').click();
+    check('filtre de fila', d.querySelector('tr.rowsel') && d.querySelector('.tray-head .chip'));
+    d.querySelector('[data-act="clear-row"]').click();
+
+    // Editor: afegir matèria i canviar-ne el nom
+    d.querySelector('[data-edit="subjects"]').click();
+    const n0 = m.querySelectorAll('[data-table="subjects"] tbody tr').length;
+    m.querySelector('[data-add-item="subjects"]').click();
+    check('afegir matèria', m.querySelectorAll('[data-table="subjects"] tbody tr').length === n0 + 1);
+    const inp = [...m.querySelectorAll('[data-table="subjects"] tbody tr')].pop().querySelector('input');
+    inp.value = 'Filosofia';
+    inp.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await until(() => d.querySelector('.save.ok'));
+    check('canviar nom (desat al servidor)', JSON.stringify(await serverData()).includes('Filosofia'));
+
+    // Càrregues: pestanya renderitza i filtre
+    m.querySelector('[data-tab="lessons"]').click();
+    check('pestanya càrregues', m.querySelectorAll('[data-table="lessons"] tbody tr').length > 50);
+    const f = m.querySelector('#lesson-filter');
+    f.value = f.options[1].value;
+    f.dispatchEvent(new w.Event('change', { bubbles: true }));
+    check('filtre de càrregues', m.querySelectorAll('[data-table="lessons"] tbody tr').length === 13);
+
+    // Grups: desdoblaments
+    m.querySelector('[data-tab="classes"]').click();
+    const div = m.querySelector('[data-k="divisions"]');
+    div.value = 'Optatives: Fr, Rob | Anglès: A1, A2';
+    div.dispatchEvent(new w.Event('change', { bubbles: true }));
+    check('desdoblaments', m.querySelector('[data-k="divisions"]').value === 'Optatives: Fr, Rob | Anglès: A1, A2');
+    check('les sessions de Fr/Rob es mantenen', placed() === p1);
+
+    // Disponibilitat
+    m.querySelector('[data-tab="teachers"]').click();
+    m.querySelector('[data-slots="teacher"]').click();
+    m.querySelector('[data-slot]').click();
+    check('disponibilitat', m.querySelector('.slot.off'));
+    m.querySelector('[data-slot-col]').click();
+    check('disponibilitat: dia sencer', m.querySelectorAll('.slot.off').length === 6);
+
+    // Normes
+    m.querySelector('[data-tab="rules"]').click();
+    m.querySelector('[data-add-rule="noConsecutive"]').click();
+    check('afegir norma', m.querySelectorAll('.rule').length === 2);
+    const sub = m.querySelector('.rule [data-chip-add][data-k="subjectIds"]');
+    sub.value = sub.options[4].value;
+    sub.dispatchEvent(new w.Event('change', { bubbles: true }));
+    check('norma amb matèria', m.querySelectorAll('.rule .rdesc')[1].textContent.startsWith('Mat'));
+    m.querySelector('[data-add-rule="teacherBlock"]').click();
+    const tch = m.querySelectorAll('.rule')[2].querySelector('[data-chip-add][data-k="teacherIds"]');
+    tch.value = tch.options[1].value;
+    tch.dispatchEvent(new w.Event('change', { bubbles: true }));
+    m.querySelectorAll('.rule')[2].querySelector('[data-slots="rule"]').click();
+    m.querySelector('[data-slot-row]').click();
+    check('bloqueig: fila sencera', m.querySelectorAll('.slot.off').length === 5);
+    m.querySelector('[data-back]').click();
+    check('descripció del bloqueig', m.querySelectorAll('.rule .rdesc')[2].textContent.includes('5 franges'));
+    check('botó normes compta', d.querySelector('[data-edit="rules"]').textContent.includes('(3)'));
+    d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    check('Esc tanca editor', m.childElementCount === 0);
+
+    // Nou centre buit
+    d.querySelector('[data-act="new-centre"]').click();
+    m.querySelector('input[name=name]').value = 'Escola prova';
+    m.querySelector('#new-centre').requestSubmit();
+    check('nou centre', await until(() => d.querySelector('#centre-sel')?.selectedOptions[0].textContent === 'Escola prova'));
+    check('centres llistats', d.querySelectorAll('#centre-sel option').length === 2);
+
+    // Omple
+    d.querySelector('#centre-sel').value = [...d.querySelectorAll('#centre-sel option')].find((o) => o.textContent === "Institut d'exemple").value;
+    d.querySelector('#centre-sel').dispatchEvent(new w.Event('change', { bubbles: true }));
+    await until(() => d.querySelectorAll('.grid tbody tr').length === 7);
+    const beforeFill = placed();
+    d.querySelector('[data-act="fill"]').click();
+    check('omple no treu cap sessió', placed() >= beforeFill);
+    check("comptador d'avisos", /avís|avisos/.test(d.querySelector('.status').textContent));
+
+    // Vista professorat: bloquejos i mode bloqueja
+    d.querySelector('[data-view="teacher"]').click();
+    check('cel·les bloquejades visibles', d.querySelectorAll('td.cell.blk').length === 5);
+    d.querySelector('[data-act="lock"]').click();
+    const free = [...d.querySelectorAll('td.cell')].find((td) => !td.classList.contains('brk') && !td.classList.contains('na'));
+    const key = `${free.dataset.row}|${free.dataset.day}|${free.dataset.period}`;
+    free.click();
+    const again = [...d.querySelectorAll('td.cell')].find((td) => `${td.dataset.row}|${td.dataset.day}|${td.dataset.period}` === key);
+    check('bloqueja hores clicant', again.classList.contains('na'));
+    d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    check('Esc surt del mode bloqueja', !d.querySelector('[data-act="lock"].on'));
+
+    // Vista de matèries
+    d.querySelector('[data-view="subject"]').click();
+    check('vista matèries', d.querySelectorAll('.grid tbody tr').length === 16);
+
+    // Exportació d'horaris individuals
+    d.querySelector('[data-act="export-tt"]').click();
+    check('diàleg d\'exportació', m.querySelectorAll('[data-exp-item]').length === 16);
+    m.querySelector('[data-exp-kind="teacher"]').click();
+    check('llista de docents', m.querySelectorAll('[data-exp-item]').length === 16);
+    m.querySelector('[data-exp-go]').click();
+    let b = downloads.at(-1);
+    check(`PDF de tot el professorat (${b?.fileName})`, b?.type === 'application/pdf' && /Professorat\.pdf$/.test(b.fileName)
+      && (await b.text()).match(/\/Type \/Page /g).length === 16);
+    d.querySelector('[data-act="export-tt"]').click();
+    m.querySelector('[data-exp-kind="class"]').click();
+    m.querySelector('[data-exp-none]').click();
+    check('cap seleccionat → botó desactivat', m.querySelector('[data-exp-go]').disabled);
+    m.querySelectorAll('[data-exp-item]')[0].click();
+    m.querySelectorAll('[data-exp-item]')[1].click();
+    m.querySelector('[data-exp-format][value="xlsx"]').click();
+    m.querySelector('[data-exp-split][value="many"]').click();
+    check('avís de Google Drive', m.textContent.includes('Fulls de càlcul de Google'));
+    m.querySelector('[data-exp-go]').click();
+    b = downloads.at(-1);
+    check(`zip amb un Excel per grup (${b?.fileName})`, b?.type === 'application/zip' && (await b.text()).includes('1r ESO B.xlsx'));
+    d.querySelector('[data-view="class"]').click();
+    d.querySelector('[data-rowsel]').click();
+    d.querySelector('[data-act="row-pdf"]').click();
+    b = downloads.at(-1);
+    check(`PDF individual d'un grup (${b?.fileName})`, b?.type === 'application/pdf' && b.fileName.endsWith('1r ESO A.pdf'));
+    d.querySelector('[data-act="clear-row"]').click();
+
+    // Professorat: hores de guàrdia i fila de cobertura
+    d.querySelector('[data-view="teacher"]').click();
+    check('fila de guàrdies a la vista de professorat', d.querySelectorAll('.grid tfoot td.cov').length === 30);
+    d.querySelector('[data-edit="teachers"]').click();
+    const g = m.querySelector('[data-duty="guard"]');
+    check('hores de guàrdia per docent', g.value === '2');
+    g.value = '3';
+    g.dispatchEvent(new w.Event('change', { bubbles: true }));
+    check('canvia les hores de guàrdia', m.querySelector('[data-duty="guard"]').value === '3' && !!d.querySelector('.tray .tcard'));
+    d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    // Baixes i substitucions
+    d.querySelector('[data-act="absences"]').click();
+    const af0 = m.querySelector('#abs-add');
+    af0.teacher.value = af0.teacher.options[1].value;
+    af0.from.value = '2026-10-19';
+    af0.to.value = '2026-10-19';
+    af0.reason.value = 'Baixa';
+    af0.requestSubmit();
+    check('afegeix una baixa', m.querySelectorAll('.abs-list tr').length === 1 && m.querySelectorAll('.abs-subs tbody tr').length > 0);
+    m.querySelector('[data-abs-propose]').click();
+    check('proposa substitucions', m.querySelectorAll('.abs-subs tr.todo').length === 0 && !!m.querySelector('.okmsg'));
+    m.querySelector('[data-abs-pdf]').click();
+    b = downloads.at(-1);
+    check(`full de substitucions (${b?.fileName})`, b?.type === 'application/pdf' && b.fileName.includes('Substitucions 2026-10-19'));
+    m.querySelector('[data-abs-shift="1"]').click();
+    check('dia següent sense res per cobrir', m.querySelector('.abs-right').textContent.includes('Cap sessió per cobrir'));
+    m.querySelector('[data-close-btn]').click();
+
+    // Administració: usuari de centre
+    d.querySelector('[data-act="admin"]').click();
+    check('panell d\'administració', await until(() => m.querySelectorAll('[data-adm-open]').length === 2));
+    m.querySelector('[data-adm-tab="users"]').click();
+    m.querySelector('[data-adm-new-user]').click();
+    const uf = m.querySelector('#adm-user');
+    uf.email.value = 'escola@prova.cat';
+    uf.name.value = 'Escola prova';
+    uf.password.value = 'clau-escola-1';
+    [...uf.querySelectorAll('input[name=centre]')].find((x) => x.parentElement.textContent.includes('Escola prova')).checked = true;
+    uf.requestSubmit();
+    check('crea usuari de centre', await until(() => m.querySelectorAll('.etable tbody tr').length === 2));
+    m.querySelector('[data-close-btn]').click();
+    d.querySelector('[data-act="logout"]').click();
+    await login('escola@prova.cat', 'clau-escola-1');
+    check('l\'usuari de centre entra al seu centre', await until(() => d.querySelector('#centre-sel')?.selectedOptions[0].textContent === 'Escola prova'));
+    check('només veu el seu centre', d.querySelectorAll('#centre-sel option').length === 1);
+    check('no veu administració ni pot crear centres', !d.querySelector('[data-act="admin"]') && !d.querySelector('[data-act="new-centre"]'));
+    d.querySelector('[data-act="account"]').click();
+    const af = m.querySelector('#acc-password');
+    af.current.value = 'clau-escola-1';
+    af.new.value = 'clau-escola-2';
+    af.again.value = 'clau-escola-2';
+    af.requestSubmit();
+    check('canvia la seva contrasenya', await until(() => m.querySelector('.okmsg')));
+    m.querySelector('[data-close-btn]').click();
+    d.querySelector('[data-act="logout"]').click();
+    check('surt', await until(() => d.getElementById('login-form')));
+
+    check(`sense errors JS (${errs.join('; ')})`, errs.length === 0);
+  } catch (err) {
+    log.push(`FAIL excepció: ${err.message}\n${err.stack}`);
+  }
+  out.textContent = log.join('\n');
+  out.id = 'done';
+}, { once: true });
+</script>
+</body>
+</html>

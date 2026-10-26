@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ca">
+<head><meta charset="utf-8"><title>Prova de normes</title></head>
+<body>
+<pre id="out">running</pre>
+<div id="modal" hidden></div>
+<script type="module">
+// Prova de les normes i del generador, directament sobre els mòduls (sense interfície).
+import { sampleSchool, buildIndex, normalize, upgrade } from '../js/model.js';
+import { buildOccupancy, evaluatePlacement, computeIssues } from '../js/conflicts.js';
+import { greedyFill } from '../js/solver/greedy.js';
+import { guardCoverage } from '../js/rules.js';
+import { sessionsToCover, proposeSubstitutions, candidates, substitutionSheet, dayOfDate } from '../js/absences.js';
+
+const out = document.getElementById('out');
+const log = [];
+const check = (name, cond) => log.push(`${cond ? 'OK  ' : 'FAIL'} ${name}`);
+const rule = (r) => ({ id: `n${Math.random()}`, on: true, hard: true, subjectIds: [], classIds: [], teacherIds: [], slots: [], ...r });
+const subj = (s, short) => s.subjects.find((x) => x.short === short).id;
+
+function fresh(rules) {
+  const s = sampleSchool();
+  s.rules = rules(s);
+  normalize(upgrade(s));
+  const t0 = performance.now();
+  const res = greedyFill(s);
+  return { s, ix: buildIndex(s), res, ms: Math.round(performance.now() - t0) };
+}
+
+// For each class and day, the subjects in period order (null = free or break).
+function dayRows(s, ix) {
+  const rows = new Map();
+  for (const c of s.cards) {
+    const l = ix.lesson.get(c.lessonId);
+    const pi = ix.periodIdx.get(c.periodId);
+    for (const cid of l.classIds) {
+      const k = `${cid}|${c.dayId}`;
+      if (!rows.has(k)) rows.set(k, s.periods.map(() => []));
+      for (let i = 0; i < l.duration; i++) rows.get(k)[pi + i].push({ subjectId: l.subjectId, card: c.id, l });
+    }
+  }
+  return rows;
+}
+
+try {
+  // Sense normes: el centre d'exemple s'omple sencer.
+  {
+    const { s, ix, res, ms } = fresh(() => []);
+    check(`sense normes: tot col·locat (${res.added}, ${ms} ms)`, res.pending === 0);
+    check('sense normes: cap conflicte', computeIssues(s, ix).conflicts.size === 0);
+  }
+
+  // No seguides (obligatòria): Mat mai dues sessions seguides.
+  {
+    const { s, ix, res, ms } = fresh((s) => [rule({ type: 'noConsecutive', subjectIds: [subj(s, 'Mat')] })]);
+    const mat = subj(s, 'Mat');
+    let bad = 0;
+    for (const row of dayRows(s, ix).values()) {
+      for (let i = 1; i < row.length; i++) {
+        const a = row[i - 1].find((x) => x.subjectId === mat), b = row[i].find((x) => x.subjectId === mat);
+        if (a && b && a.card !== b.card && !s.periods[i].isBreak && !s.periods[i - 1].isBreak) bad++;
+      }
+    }
+    check(`no seguides: cap Mat-Mat (pendents ${res.pending}, ${ms} ms)`, bad === 0);
+    check('no seguides: cap conflicte', computeIssues(s, ix).conflicts.size === 0);
+  }
+
+  // Matèria en franges concretes: EF només després del pati.
+  {
+    const { s, ix, res } = fresh((s) => [rule({
+      type: 'subjectSlots', mode: 'only', subjectIds: [subj(s, 'EF')],
+      slots: s.days.flatMap((d) => ['p4', 'p5', 'p6'].map((p) => `${d.id}|${p}`)),
+    })]);
+    const ef = s.cards.filter((c) => ix.lesson.get(c.lessonId).subjectId === subj(s, 'EF'));
+    check(`franges: EF només a la tarda (${ef.length} col·locades, pendents ${res.pending})`, ef.length > 0 && ef.every((c) => ['p4', 'p5'].includes(c.periodId)));
+  }
+
+  // Matèria mai a una franja: Mat mai a 6a.
+  {
+    const { s, ix } = fresh((s) => [rule({
+      type: 'subjectSlots', mode: 'never', subjectIds: [subj(s, 'Mat')], slots: s.days.map((d) => `${d.id}|p6`),
+    })]);
+    check('franges: Mat mai a 6a', !s.cards.some((c) => c.periodId === 'p6' && ix.lesson.get(c.lessonId).subjectId === subj(s, 'Mat')));
+  }
+
+  // Màxim al dia: cap matèria més d'una sessió al dia.
+  {
+    const { s, ix, res } = fresh(() => [rule({ type: 'maxPerDay', max: 1 })]);
+    const seen = new Map();
+    let bad = 0;
+    for (const c of s.cards) {
+      const l = ix.lesson.get(c.lessonId);
+      const k = `${l.id}|${c.dayId}`;
+      if (seen.has(k)) bad++;
+      seen.set(k, true);
+    }
+    check(`màxim 1 al dia (pendents ${res.pending})`, bad === 0);
+  }
+
+  // Bloqueig de docents: reunió dimarts a 5a i 6a per a dos docents.
+  {
+    let T;
+    const { s, ix } = fresh((s) => {
+      T = [s.teachers[0].id, s.teachers[1].id];
+      return [rule({ type: 'teacherBlock', label: 'Reunió', teacherIds: T, slots: ['d2|p5', 'd2|p6'] })];
+    });
+    const occ = buildOccupancy(s, ix);
+    const hit = ['d2|p5', 'd2|p6'].some((k) => (occ.get(k) || []).some((o) => o.lesson.teacherIds.some((t) => T.includes(t))));
+    check('bloqueig: cap classe dels docents a la reunió', !hit);
+  }
+
+  // Preferent: es pot col·locar però dona avís; el generador l'evita.
+  {
+    const { s, ix, res } = fresh((s) => [rule({ type: 'noConsecutive', hard: false })]);
+    check(`preferent: el generador gairebé no en té (${res.warnings})`, res.warnings <= 3);
+    // Buida l'horari i posa una sessió a 3a: una altra de la mateixa càrrega a 2a queda seguida; a 4a no (hi ha el pati).
+    s.cards = [];
+    const l = s.lessons.find((x) => x.duration === 1 && x.perWeek > 1);
+    s.cards.push({ id: 'c1', lessonId: l.id, dayId: 'd1', periodId: 'p3', roomId: null });
+    const occ = buildOccupancy(s, ix);
+    const soft = evaluatePlacement({ ...s, rules: [rule({ type: 'noConsecutive', hard: false })] }, ix, occ, l, 'd1', 'p2');
+    const hard = evaluatePlacement({ ...s, rules: [rule({ type: 'noConsecutive', hard: true })] }, ix, occ, l, 'd1', 'p2');
+    const apart = evaluatePlacement({ ...s, rules: [rule({ type: 'noConsecutive', hard: true })] }, ix, occ, l, 'd1', 'p4');
+    check('preferent: seguida → vàlida amb avís', soft.ok && soft.warnings.some((w) => w.includes('seguides')));
+    check('obligatòria: seguida → vermella', !hard.ok && hard.reasons.some((r) => r.includes('seguides')));
+    check('el pati separa: 3a i 4a no compten com a seguides', apart.ok);
+  }
+
+  // Guàrdies: el centre d'exemple en té 2 per docent i la norma de cobertura (mínim 1).
+  {
+    const s = sampleSchool();
+    const t0 = performance.now();
+    const res = greedyFill(s);
+    const ix = buildIndex(s);
+    const cov = guardCoverage(s, ix, buildOccupancy(s, ix));
+    check(`guàrdies: tot col·locat i cap hora sense guàrdia (pendents ${res.pending}, sense cobrir ${cov.short.length}, ${Math.round(performance.now() - t0)} ms)`,
+      res.pending === 0 && cov.short.length === 0 && res.uncovered === 0);
+    check('guàrdies: cap conflicte', computeIssues(s, ix).conflicts.size === 0);
+
+    // Baixa d'un docent un dilluns: les seves classes surten per cobrir i es proposen substituts.
+    const monday = '2026-10-19';
+    check('dilluns és el primer dia', dayOfDate(s, monday)?.id === s.days[0].id && dayOfDate(s, '2026-10-18') === null);
+    const T = s.teachers[0];
+    s.absences = [{ id: 'a1', teacherId: T.id, from: monday, to: '2026-10-20', reason: 'Baixa' }];
+    const items = sessionsToCover(s, ix, monday);
+    const own = s.cards.filter((c) => c.dayId === 'd1' && ix.lesson.get(c.lessonId).teacherIds.includes(T.id)
+      && !ix.subject.get(ix.lesson.get(c.lessonId).subjectId).duty);
+    check(`baixa: ${items.length} sessions per cobrir (sense guàrdies ni coordinació)`, items.length === own.length && items.length > 0);
+    const occ = buildOccupancy(s, ix);
+    const firstCands = items.map((it) => candidates(s, ix, occ, monday, it));
+    const n = proposeSubstitutions(s, monday);
+    check(`baixa: ${n} substitucions proposades`, n === items.length);
+    const slotsOf = (cardId) => { const c = s.cards.find((x) => x.id === cardId); const l = ix.lesson.get(c.lessonId); const pi = ix.periodIdx.get(c.periodId); return Array.from({ length: l.duration }, (_, k) => `${c.dayId}|${s.periods[pi + k].id}`); };
+    const busy = new Set();
+    let clash = false, teaching = false;
+    for (const x of s.subs) {
+      for (const k of slotsOf(x.cardId)) {
+        if (busy.has(`${x.teacherId}|${k}`)) clash = true;
+        busy.add(`${x.teacherId}|${k}`);
+        if ((occ.get(k) || []).some((o) => o.lesson.teacherIds.includes(x.teacherId) && !ix.subject.get(o.lesson.subjectId).duty)) teaching = true;
+      }
+    }
+    check('substituts: ningú a dos llocs alhora ni deixant una classe', !clash && !teaching && !s.subs.some((x) => x.teacherId === T.id));
+    check('substituts: prioritat al professorat de guàrdia', firstCands.every((c) => !c.some((x) => x.onGuard) || c[0].onGuard));
+    const tue = s.cards.filter((c) => c.dayId === 'd2' && ix.lesson.get(c.lessonId).teacherIds.includes(T.id) && !ix.subject.get(ix.lesson.get(c.lessonId).subjectId).duty).length;
+    check(`la baixa dura fins dimarts (${sessionsToCover(s, ix, '2026-10-20').length} de ${tue}) i no dimecres`,
+      sessionsToCover(s, ix, '2026-10-20').length === tue && sessionsToCover(s, ix, '2026-10-21').length === 0);
+    const sheet = new TextDecoder('latin1').decode(substitutionSheet(s, monday));
+    check('full de substitucions en PDF', sheet.startsWith('%PDF') && sheet.includes('/Type /Page '));
+  }
+
+  // Normalització: matèria esborrada desapareix de la norma.
+  {
+    const s = sampleSchool();
+    const mat = subj(s, 'Mat');
+    s.rules = [rule({ type: 'maxPerDay', max: '0', subjectIds: [mat], slots: ['d9|p1'] })];
+    s.subjects = s.subjects.filter((x) => x.id !== mat);
+    normalize(upgrade(s));
+    check('normalitza referències i màxim', s.rules[0].subjectIds.length === 0 && s.rules[0].slots.length === 0 && s.rules[0].max === 1);
+  }
+} catch (err) {
+  log.push(`FAIL excepció: ${err.message}\n${err.stack}`);
+}
+out.textContent = log.join('\n');
+out.id = 'done';
+</script>
+</body>
+</html>
