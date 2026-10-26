@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ca">
+<head><meta charset="utf-8"><title>Prova del mode local</title></head>
+<body>
+<pre id="out">running</pre>
+<iframe id="f" style="width:1400px;height:850px"></iframe>
+<script>
+// Prova del mode local (sense servidor, com a GitHub Pages): cal servir la carpeta amb un servidor estàtic; ho prepara tests/run.py.
+const out = document.getElementById('out');
+const log = [];
+const check = (name, cond) => { log.push(`${cond ? 'OK  ' : 'FAIL'} ${name}`); out.textContent = log.join('\n'); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function until(cond, ms = 15000) {
+  for (let t = 0; t < ms; t += 50) { try { if (cond()) return true; } catch { /* not ready */ } await wait(50); }
+  return false;
+}
+const frame = document.getElementById('f');
+const open = () => new Promise((r) => { frame.addEventListener('load', r, { once: true }); frame.src = '../index.html'; });
+
+(async () => {
+  try {
+    Object.keys(localStorage).filter((k) => k.startsWith('horaris.')).forEach((k) => localStorage.removeItem(k));
+    await open();
+    let d = frame.contentDocument;
+    check('entra sense inici de sessió', await until(() => d.querySelector('.empty [data-act="new-centre"]')) && !d.getElementById('login-form'));
+    check('indica que es desa al navegador', !!d.querySelector('.local-tag') && !d.querySelector('[data-act="logout"]') && !d.querySelector('[data-act="admin"]'));
+    d.querySelector('.empty [data-act="new-centre"]').click();
+    const m = d.getElementById('modal');
+    m.querySelector('[name=name]').value = 'Institut Local';
+    m.querySelector('[name=tpl]').value = 'exemple';
+    m.querySelector('#new-centre').requestSubmit();
+    check('crea un centre d’exemple', await until(() => d.querySelector('.grid-wrap') && d.getElementById('centre-sel').selectedOptions[0].textContent === 'Institut Local'));
+    const placed = () => parseInt(d.querySelector('.status b').textContent, 10);
+    const before = placed();
+    frame.contentWindow.confirm = () => true;
+    d.querySelector('[data-act="clear"]').click();
+    check('es pot editar', await until(() => placed() === 0 && before > 0));
+    await wait(1500);
+    await open();
+    d = frame.contentDocument;
+    check('les dades es mantenen en recarregar', await until(() => d.querySelector('.grid-wrap') && placed() === 0 && d.getElementById('centre-sel').selectedOptions[0].textContent === 'Institut Local'));
+    frame.contentWindow.confirm = () => true;
+    d.querySelector('[data-act="del-centre"]').click();
+    check('elimina el centre', await until(() => d.querySelector('.empty [data-act="new-centre"]')));
+  } catch (err) {
+    log.push(`FAIL excepció: ${err.message}\n${err.stack}`);
+  }
+  out.textContent = log.join('\n');
+  out.id = 'done';
+})();
+</script>
+</body>
+</html>

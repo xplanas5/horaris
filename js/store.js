@@ -1,6 +1,6 @@
 import { emptySchool, sampleSchool, upgrade, normalize } from './model.js';
 import { greedyFill } from './solver/greedy.js';
-import { api } from './api.js';
+import { api, isLocal } from './api.js';
 
 /*
  * Sessió d'usuari i centre obert. Les dades es desen al servidor automàticament poc després de cada canvi;
@@ -25,6 +25,7 @@ const subs = new Set();
 export const subscribe = (fn) => subs.add(fn);
 const emit = () => subs.forEach((fn) => fn(state));
 
+export { isLocal };
 export const getState = () => state;
 export const getUser = () => me?.user || null;
 export const isAdmin = () => me?.user.role === 'admin';

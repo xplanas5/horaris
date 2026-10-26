@@ -75,6 +75,9 @@ function render() {
 }
 
 function userGroup() {
+  if (store.isLocal()) {
+    return `<div class="group user"><span class="local-tag" title="Sense servidor: els centres es desen només en aquest navegador. Fes-ne còpies amb «Còpia JSON».">💻 Desat en aquest navegador</span></div>`;
+  }
   const u = store.getUser();
   return `<div class="group user">
       ${store.isAdmin() ? '<button data-act="admin" title="Gestiona centres i usuaris">⚙ Administració</button>' : ''}
@@ -602,6 +605,7 @@ app.addEventListener('submit', (e) => {
 window.addEventListener('beforeunload', (e) => {
   if (!store.hasUnsaved()) return;
   store.flush();
+  if (store.isLocal()) return; // the local save is synchronous
   e.preventDefault();
   e.returnValue = '';
 });

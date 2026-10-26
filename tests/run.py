@@ -4,6 +4,7 @@ Executa totes les proves:  python tests/run.py
 - Proves de l'API (tests/test_server.py).
 - Proves al navegador (Microsoft Edge sense finestra) contra un servidor temporal amb una base de dades buida.
 - Validació amb Python dels fitxers Excel i PDF que genera l'aplicació.
+- Mode local (sense servidor, com a GitHub Pages) servint la carpeta amb un servidor estàtic.
 """
 import base64
 import html
@@ -15,6 +16,8 @@ import sys
 import tempfile
 import threading
 import unittest
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import zipfile
 import xml.etree.ElementTree as ET
 from urllib.parse import urlencode
@@ -102,6 +105,19 @@ def main():
         finally:
             srv.shutdown()
             srv.server_close()
+
+        print('\n== local.html (sense servidor) ==')
+        quiet = type('Quiet', (SimpleHTTPRequestHandler,), {'log_message': lambda *a: None})
+        static = ThreadingHTTPServer(('127.0.0.1', 0), partial(quiet, directory=os.path.join(HERE, '..')))
+        threading.Thread(target=static.serve_forever, daemon=True).start()
+        try:
+            dom = browser(f'http://127.0.0.1:{static.server_address[1]}/tests/local.html', os.path.join(tmp, 'edge-local'))
+            result = pre(dom, 'done')
+            print(result if result is not None else f'FAIL la pàgina no ha acabat: {pre(dom, "out") or dom[:500]}')
+            failures += 1 if result is None else result.count('FAIL')
+        finally:
+            static.shutdown()
+            static.server_close()
 
     print(f'\n{"TOT CORRECTE" if not failures else f"{failures} ERRORS"}')
     sys.exit(1 if failures else 0)

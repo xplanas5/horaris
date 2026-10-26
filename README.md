@@ -12,6 +12,10 @@ python server.py
 
 i obre http://localhost:8000. No cal instal·lar res més: el servidor és Python estàndard (SQLite) i la web és HTML + JavaScript sense compilació.
 
+### Versió en línia sense servidor
+
+També es pot fer servir directament a https://xplanas5.github.io/horaris/ (GitHub Pages). Sense `server.py` l'aplicació entra en **mode local**: no hi ha inici de sessió ni usuaris, i els centres es desen només en aquell navegador (localStorage). Fes-ne còpies amb **Còpia JSON**; esborrar les dades del navegador les elimina.
+
 ### Usuaris i dades
 
 - Les dades (centres, horaris, usuaris) es desen al servidor, a `data/horaris.db`. **Fes-ne còpies de seguretat** (n'hi ha prou de copiar el fitxer amb el servidor aturat).
@@ -52,7 +56,8 @@ Per fer-lo accessible des d'internet cal un servidor (del CRP, del Departament o
 | `js/conflicts.js` | Restriccions dures: validesa d'una col·locació i conflictes |
 | `js/rules.js` | Normes (obligatòries / preferents) i les seves comprovacions |
 | `server.py` | Servidor: fitxers estàtics, API, usuaris, sessions i base de dades SQLite |
-| `js/api.js` | Crides a l'API |
+| `js/api.js` | Crides a l'API (passa al mode local si no hi ha servidor) |
+| `js/local.js` | Mode local: API simulada sobre el localStorage del navegador |
 | `js/store.js` | Sessió, estat del centre obert, historial (desfer) i desat automàtic al servidor |
 | `js/absences.js` | Baixes, propostes de substitució i full del dia |
 | `js/admin.js` | Inici de sessió, compte propi i administració de centres i usuaris |
@@ -60,7 +65,7 @@ Per fer-lo accessible des d'internet cal un servidor (del CRP, del Departament o
 | `js/main.js` | Graella, safata, panell de detall, arrossegar |
 | `js/editor.js` | Finestra d'edició de dades |
 | `js/solver/greedy.js` | Col·locació automàtica (voraç + reparació) |
-| `tests/` | Proves: `python tests/run.py` (API, navegador amb Edge i validació dels PDF/Excel) |
+| `tests/` | Proves: `python tests/run.py` (API, navegador amb Edge, mode local i validació dels PDF/Excel) |
 
 ## Properes fases
 
